@@ -131,6 +131,27 @@ console.log('parseChapterContent (premium chapter)');
   check('status premium', r.status === 'premium', r.status);
 }
 
+console.log('parseChapterContent (inline-HTML gallery chapter)');
+{
+  const r = parseChapterContent(fx('chapter-gallery.html'));
+  check('status ok', r.status === 'ok', r.status);
+  const html = r.status === 'ok' ? r.html : '';
+  check('banner stripped', !html.includes('WE TRIED TRANSLATIONS'));
+  check('discord promo stripped', !html.includes('dsc.gg/wetried'));
+  check('keeps warning text', html.includes('Spoiler warning'));
+  check('keeps h1 heading', /<h1[^>]*>Official Covers<\/h1>/.test(html));
+  check(
+    'keeps both illustrations',
+    (html.match(/<img[^>]*>/g) || []).length === 2,
+    (html.match(/<img[^>]*>/g) || []).length + ' imgs',
+  );
+  check('keeps img src', html.includes('https://media.example.com/cover1.jpg'));
+  check(
+    'image blocks keep order',
+    html.indexOf('cover1.jpg') < html.indexOf('cover2.png'),
+  );
+}
+
 console.log('parseChapterContent (edge cases)');
 {
   check(

@@ -83,6 +83,16 @@ check('premium chapter shows notice', locked.includes('premium'), locked.slice(0
 const locked705 = await plugin.parseChapter('a-knight-who-eternally-regresses/chapter-705');
 check('paid chapter 705 shows notice', locked705.includes('premium'));
 
+// Gallery/illustration chapters embed their HTML inline (no flight row).
+const gallery = await plugin.parseChapter(
+  'the-police-do-a-better-job-than-heroes/illustrations',
+);
+check('gallery chapter loads', gallery.includes('<img'), gallery.slice(0, 80));
+check(
+  'gallery keeps headings',
+  /<h1[^>]*>Official Covers<\/h1>/.test(gallery),
+);
+
 check('resolveUrl', plugin.resolveUrl('a/chapter-1') === 'https://wetriedtls.com/series/a/chapter-1');
 
 console.log(failures ? `\n${failures} FAILURES` : '\nALL LIVE CHECKS PASSED');
