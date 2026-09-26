@@ -178,19 +178,44 @@ export function chapterDisplayName(c: ChapterInfo): string {
 }
 
 /**
- * Route a cover through a fast image proxy at a list-friendly size.
- * The site's own covers are up to ~1 MB (they load painfully slowly in
- * the app's novel list) and the CDN offers no smaller variant, so we
- * request a 400px-wide webp instead. Non-URL values pass through.
+ * Route an image through a fast image proxy at the given width.
+ * The site's own media files are enormous (covers up to ~1 MB,
+ * illustrations 6-12 MB each) and the CDN offers no smaller variant,
+ * so we request a webp instead. Non-URL values pass through.
+ */
+function proxiedImageUrl(url: string, width: number): string {
+  const bare = url.replace(/^https?:\/\//i, '');
+  return (
+    'https://images.weserv.nl/?url=' +
+    encodeURIComponent(bare) +
+    '&w=' +
+    width +
+    '&q=80&output=webp'
+  );
+}
+
+/**
+ * Route a cover through a fast image proxy at a list-friendly size
+ * (400px wide). Non-URL values pass through.
  */
 export function coverUrl(thumbnail: string): string {
   const t = (thumbnail || '').trim();
   if (!/^https?:\/\//i.test(t)) return t;
-  const bare = t.replace(/^https?:\/\//i, '');
-  return (
-    'https://images.weserv.nl/?url=' +
-    encodeURIComponent(bare) +
-    '&w=400&q=80&output=webp'
+  return proxiedImageUrl(t, 400);
+}
+
+/**
+ * Shrink in-chapter illustrations through the image proxy (800px webp).
+ * A single illustration can be 6-12 MB; proxied it drops to ~100-150 KB
+ * with no visible loss on a phone screen, so illustrated chapters load
+ * instantly instead of chewing through mobile data. Only the site's own
+ * media host is rewritten; anything else passes through untouched.
+ */
+export function shrinkIllustrations(html: string): string {
+  return html.replace(
+    /<img\b([^>]*?)\bsrc="(https?:\/\/media\.reaperscans\.net\/[^"]+)"([^>]*?)>/gi,
+    (_m, pre, src, post) =>
+      '<img' + pre + ' src="' + proxiedImageUrl(src, 800) + '"' + post + '>',
   );
 }
 
@@ -340,5 +365,5 @@ export function parseChapterContent(html: string): ChapterContentResult {
   while (end > start && isEdgeJunk(blocks[end - 1])) end--;
   const cleaned = blocks.slice(start, end).join('\n');
   if (!paragraphText(cleaned)) return { status: 'empty' };
-  return { status: 'ok', html: cleaned };
+  return { status: 'ok', html: shrinkIllustrations(cleaned) };
 }
