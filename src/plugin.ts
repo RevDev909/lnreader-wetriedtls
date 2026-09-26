@@ -155,7 +155,7 @@ class WeTriedTLS implements Plugin.PluginBase {
   name = 'We Tried TLS';
   icon = 'src/en/wetriedtls/icon.png';
   site = 'https://wetriedtls.com';
-  version = '1.0.1';
+  version = '1.0.2';
 
   async popularNovels(
     pageNo: number,

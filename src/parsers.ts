@@ -254,6 +254,9 @@ function isTitleRepeat(p: string): boolean {
 }
 
 function isPromoParagraph(p: string): boolean {
+  // A block that carries an illustration is content, never promo — even
+  // when it has no text of its own (e.g. <p><div><img></div></p>).
+  if (/<img[\s>]/i.test(p)) return false;
   const t = paragraphText(p).toLowerCase();
   if (!t || t === '= = =') return true;
   if (t.indexOf('we tried translations') !== -1) return true;
@@ -265,10 +268,12 @@ function isPromoParagraph(p: string): boolean {
 /**
  * Extract the chapter body from a chapter page's HTML.
  *
- * The page is a Next.js app-router page: the chapter record carries
+ * The page is a Next.js app-router page. Most chapters carry
  * `"chapter_content":"$<rowId>"` and the body HTML lives in the flight
- * row `<rowId>:T<hex>,` that follows. Returns the cleaned HTML, or a
- * non-ok status for locked / missing / unparseable chapters.
+ * row `<rowId>:T<hex>,` that follows. Gallery/illustration chapters
+ * instead embed the chapter HTML inline as the chapter_content value.
+ * Returns the cleaned HTML, or a non-ok status for locked / missing /
+ * unparseable chapters.
  */
 export function parseChapterContent(html: string): ChapterContentResult {
   if (/this chapter is premium!/i.test(html)) return { status: 'premium' };
@@ -278,22 +283,39 @@ export function parseChapterContent(html: string): ChapterContentResult {
   if (title && /^\s*404/i.test(title[1])) return { status: 'notfound' };
 
   const flight = extractFlightText(html);
-  const ref = /"chapter_content":"\$([0-9a-z]{1,4})"/.exec(flight);
-  if (!ref) return { status: 'empty' };
+  // chapter_content is either a flight-row reference ("$<rowId>") or the
+  // chapter HTML inline (gallery/illustration chapters). The value is a
+  // JSON string, so internal quotes arrive escaped.
+  const contentM = /"chapter_content":"((?:[^"\\]|\\.)*)"/.exec(flight);
+  if (!contentM) return { status: 'empty' };
+  let raw: string;
+  try {
+    raw = JSON.parse('"' + contentM[1] + '"');
+  } catch {
+    return { status: 'empty' };
+  }
 
-  // The row looks like `<rowId>:T<hex>,<payload>` where <hex> is the exact
-  // UTF-8 byte length of the payload. Respecting it is the only reliable
-  // end boundary: flight metadata follows the payload on the same line,
-  // so a "next row" lookahead overshoots.
-  const rowRe = new RegExp(
-    '\\n' + ref[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':T([0-9a-f]+),',
-  );
-  const row = rowRe.exec(flight);
-  if (!row) return { status: 'empty' };
-  const byteLen = parseInt(row[1], 16);
-  if (!(byteLen > 0)) return { status: 'empty' };
-  const payloadStart = row.index + row[0].length;
-  const payload = sliceUtf8Bytes(flight, payloadStart, byteLen);
+  let payload: string;
+  const rowRef = /^\$([0-9a-z]{1,4})$/.exec(raw);
+  if (rowRef) {
+    // The row looks like `<rowId>:T<hex>,<payload>` where <hex> is the exact
+    // UTF-8 byte length of the payload. Respecting it is the only reliable
+    // end boundary: flight metadata follows the payload on the same line,
+    // so a "next row" lookahead overshoots.
+    const rowRe = new RegExp(
+      '\\n' + rowRef[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':T([0-9a-f]+),',
+    );
+    const row = rowRe.exec(flight);
+    if (!row) return { status: 'empty' };
+    const byteLen = parseInt(row[1], 16);
+    if (!(byteLen > 0)) return { status: 'empty' };
+    const payloadStart = row.index + row[0].length;
+    payload = sliceUtf8Bytes(flight, payloadStart, byteLen);
+  } else if (/^\s*</.test(raw)) {
+    payload = raw;
+  } else {
+    return { status: 'empty' };
+  }
   if (!payload) return { status: 'empty' };
 
   // Paragraph breaks inside the payload are literal \r\n / \n sequences.
@@ -304,9 +326,13 @@ export function parseChapterContent(html: string): ChapterContentResult {
     .trim();
   if (!body) return { status: 'empty' };
 
-  // Split into top-level <p> blocks and trim the site's promo header /
-  // footer (banner, series/chapter title repeats, discord plug).
-  const blocks = body.match(/<p[\s\S]*?<\/p>/gi) || [body];
+  // Split into top-level blocks — paragraphs, headings, figures and
+  // standalone images, in document order — and trim the site's promo
+  // header / footer (banner, series/chapter title repeats, discord plug).
+  const blocks =
+    body.match(
+      /<p[\s\S]*?<\/p>|<h[1-6][\s\S]*?<\/h[1-6]>|<figure[\s\S]*?<\/figure>|<img[^>]*>/gi,
+    ) || [body];
   let start = 0;
   let end = blocks.length;
   const isEdgeJunk = (p: string) => isPromoParagraph(p) || isTitleRepeat(p);
