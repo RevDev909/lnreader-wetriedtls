@@ -8,6 +8,7 @@ import {
   parseChapterList,
   parseQueryResults,
   parseSeriesDetail,
+  shrinkIllustrations,
   stripHtml,
 } from './parsers.bundle.mjs';
 
@@ -131,6 +132,22 @@ console.log('parseChapterContent (premium chapter)');
   check('status premium', r.status === 'premium', r.status);
 }
 
+console.log('shrinkIllustrations');
+{
+  const big =
+    '<p><img dir="auto" src="https://media.reaperscans.net/file/7BSHk1m/t8njybiciwoxoqavujt3dchg.jpg" alt="cover"></p>';
+  const out = shrinkIllustrations(big);
+  check('rewrites site media', out.includes('https://images.weserv.nl/?url='), out.slice(0, 80));
+  check('800px width', out.includes('w=800'), out.slice(0, 120));
+  check('webp output', out.includes('output=webp'));
+  check('keeps alt text', out.includes('alt="cover"'), out.slice(0, 160));
+  check('original gone', !out.includes('media.reaperscans.net/file/'));
+  const other =
+    '<p><img src="https://example.com/pic.jpg"></p><p>text</p>';
+  check('other hosts untouched', shrinkIllustrations(other) === other);
+  check('no images untouched', shrinkIllustrations('<p>hi</p>') === '<p>hi</p>');
+}
+
 console.log('parseChapterContent (inline-HTML gallery chapter)');
 {
   const r = parseChapterContent(fx('chapter-gallery.html'));
@@ -142,16 +159,20 @@ console.log('parseChapterContent (inline-HTML gallery chapter)');
   check('keeps h1 heading', /<h1[^>]*>Official Covers<\/h1>/.test(html));
   check(
     'keeps both illustrations',
-    (html.match(/<img[^>]*>/g) || []).length === 2,
+    (html.match(/<img[^>]*>/g) || []).length === 3,
     (html.match(/<img[^>]*>/g) || []).length + ' imgs',
   );
   check('keeps img src', html.includes('https://media.example.com/cover1.jpg'));
+  check(
+    'site media proxied end-to-end',
+    html.includes('images.weserv.nl') && html.includes('w=800'),
+  );
+  check('proxied keeps source', html.includes('media.reaperscans.net'));
   check(
     'image blocks keep order',
     html.indexOf('cover1.jpg') < html.indexOf('cover2.png'),
   );
 }
-
 console.log('parseChapterContent (edge cases)');
 {
   check(

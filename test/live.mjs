@@ -2,7 +2,7 @@
 // wrapper with real network and exercise all four plugin methods.
 import { readFileSync } from 'fs';
 
-const code = readFileSync('.dist/wetriedtls-1.0.1.js', 'utf8');
+const code = readFileSync('.dist/wetriedtls-1.0.3.js', 'utf8');
 const UA = 'Mozilla/5.0 (Linux; Android 10)';
 
 const NovelStatus = {
@@ -91,6 +91,11 @@ check('gallery chapter loads', gallery.includes('<img'), gallery.slice(0, 80));
 check(
   'gallery keeps headings',
   /<h1[^>]*>Official Covers<\/h1>/.test(gallery),
+);
+check(
+  'gallery illustrations proxied',
+  gallery.includes('images.weserv.nl') && gallery.includes('w=800'),
+  gallery.slice(0, 120),
 );
 
 check('resolveUrl', plugin.resolveUrl('a/chapter-1') === 'https://wetriedtls.com/series/a/chapter-1');
