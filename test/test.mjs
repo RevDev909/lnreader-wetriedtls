@@ -1,6 +1,8 @@
 // Unit tests for the We Tried TLS parsers (run against captured fixtures).
 import { readFileSync } from 'fs';
 import {
+  chapterDisplayName,
+  coverUrl,
   extractFlightText,
   parseChapterContent,
   parseChapterList,
@@ -63,6 +65,50 @@ console.log('parseChapterList');
   );
   check('chapter number', p.items[1].number === 1, String(p.items[1].number));
   check('garbage -> empty', parseChapterList('nope').items.length === 0);
+  check('free chapters not locked', p.items.every(c => c.locked === false));
+}
+
+console.log('parseChapterList (paid)');
+{
+  const p = parseChapterList(fx('paid.json'), true);
+  check('paid items', p.items.length === 50, String(p.items.length));
+  check('all locked', p.items.every(c => c.locked === true));
+  check(
+    'first paid chapter',
+    p.items[0].slug === 'chapter-705' && p.items[0].number === 705,
+    JSON.stringify(p.items[0]),
+  );
+  check(
+    'last paid chapter',
+    p.items[49].slug === 'chapter-754' && p.items[49].number === 754,
+    JSON.stringify(p.items[49]),
+  );
+  check('name has title', p.items[0].name === 'Chapter 705: Information Matters', p.items[0].name);
+}
+
+console.log('chapterDisplayName');
+{
+  check(
+    'locked gets lock prefix',
+    chapterDisplayName({ slug: 'x', name: 'Chapter 705: Foo', number: 705, publishedAt: '', locked: true }) ===
+      '🔒 Chapter 705: Foo',
+  );
+  check(
+    'free has no prefix',
+    chapterDisplayName({ slug: 'x', name: 'Chapter 1: Bar', number: 1, publishedAt: '', locked: false }) ===
+      'Chapter 1: Bar',
+  );
+}
+
+console.log('coverUrl');
+{
+  const out = coverUrl('https://media.reaperscans.net/file/7BSHk1m/covers/abc.jpg');
+  check('proxied', out.startsWith('https://images.weserv.nl/?url='), out);
+  check('keeps source', out.includes('media.reaperscans.net'), out);
+  check('width param', out.includes('w=400'), out);
+  check('webp output', out.includes('output=webp'), out);
+  check('empty passthrough', coverUrl('') === '');
+  check('non-url passthrough', coverUrl('notaurl') === 'notaurl');
 }
 
 console.log('parseChapterContent (free chapter)');
