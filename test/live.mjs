@@ -2,7 +2,7 @@
 // wrapper with real network and exercise all four plugin methods.
 import { readFileSync } from 'fs';
 
-const code = readFileSync('.dist/wetriedtls-1.0.3.js', 'utf8');
+const code = readFileSync('.dist/wetriedtls-1.0.4.js', 'utf8');
 const UA = 'Mozilla/5.0 (Linux; Android 10)';
 
 const NovelStatus = {
@@ -55,6 +55,21 @@ check('popular returns 12', popular.length === 12, String(popular.length));
 const popular2 = await plugin.popularNovels(2, {});
 check('popular page 2 differs', popular2.length > 0 && popular2[0].path !== popular[0].path);
 check('popular covers proxied', popular.every(n => n.cover.startsWith('https://images.weserv.nl/')), popular[0].cover);
+
+// Status filter: only completed novels should come back.
+const completed = await plugin.popularNovels(1, {
+  filters: { status: { type: 'Picker', value: 'Completed' } },
+});
+check('status filter returns fewer', completed.length > 0 && completed.length < popular.length, String(completed.length));
+let allCompleted = true;
+for (const n of completed) {
+  const d = await plugin.parseNovel(n.path);
+  if (d.status !== 'Completed') {
+    allCompleted = false;
+    console.log('  non-completed: ' + d.name + ' -> ' + d.status);
+  }
+}
+check('status filter all completed', allCompleted);
 
 const novel = await plugin.parseNovel('a-knight-who-eternally-regresses');
 check('novel name', novel.name === 'A Knight who Eternally Regresses', novel.name);

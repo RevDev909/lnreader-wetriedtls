@@ -1,6 +1,8 @@
 // Unit tests for the We Tried TLS parsers (run against captured fixtures).
 import { readFileSync } from 'fs';
 import {
+  API_BASE,
+  catalogUrl,
   chapterDisplayName,
   coverUrl,
   extractFlightText,
@@ -98,6 +100,25 @@ console.log('chapterDisplayName');
     'free has no prefix',
     chapterDisplayName({ slug: 'x', name: 'Chapter 1: Bar', number: 1, publishedAt: '', locked: false }) ===
       'Chapter 1: Bar',
+  );
+}
+
+console.log('catalogUrl');
+{
+  const base = API_BASE + '/query?adult=true&query_string=&page=1';
+  check('default has no status', catalogUrl(1) === base, catalogUrl(1));
+  check('all has no status', catalogUrl(1, 'all') === base);
+  check('empty has no status', catalogUrl(1, '') === base);
+  const completed = catalogUrl(1, 'Completed');
+  check(
+    'completed adds param',
+    completed === base + '&status=Completed',
+    completed,
+  );
+  check('page number', catalogUrl(3, 'Ongoing').includes('page=3'));
+  check(
+    'value encoded',
+    catalogUrl(1, 'On Hold').includes('status=On%20Hold'),
   );
 }
 
