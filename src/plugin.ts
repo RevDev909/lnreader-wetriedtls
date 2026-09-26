@@ -1,4 +1,8 @@
 import {
+  ChapterInfo,
+  chapterDisplayName,
+  coverUrl,
+  extractFlightText,
   parseChapterContent,
   parseChapterList,
   parseQueryResults,
@@ -45,10 +49,11 @@ const fetchLib = loadFetchLib();
 const NovelStatus = loadNovelStatus();
 
 // --- Resilient fetching -------------------------------------------------
-// One HTTP request per chapter/page, so a single flaky request used to fail
-// the whole call. This wrapper adds a timeout and retries transient
-// failures with exponential backoff. It never fires parallel requests and
-// never retries definite client errors, so the site is treated respectfully.
+// The same pattern as the Nightjar Reads plugin: one HTTP request per
+// chapter/page, so a single flaky request used to fail the whole call.
+// This wrapper adds a timeout and retries transient failures with
+// exponential backoff. It never fires parallel requests and never
+// retries definite client errors, so the site is treated respectfully.
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_FETCH_ATTEMPTS = 3;
 
@@ -150,7 +155,7 @@ class WeTriedTLS implements Plugin.PluginBase {
   name = 'We Tried TLS';
   icon = 'src/en/wetriedtls/icon.png';
   site = 'https://wetriedtls.com';
-  version = '1.0.0';
+  version = '1.0.1';
 
   async popularNovels(
     pageNo: number,
@@ -164,7 +169,7 @@ class WeTriedTLS implements Plugin.PluginBase {
     return page.items.map(n => ({
       name: n.title,
       path: n.slug,
-      cover: n.cover,
+      cover: coverUrl(n.cover),
     }));
   }
 
@@ -174,10 +179,12 @@ class WeTriedTLS implements Plugin.PluginBase {
     if (!detail) throw new Error('Could not load novel details');
 
     // The chapter list is paginated (500 per page keeps it to ~2
-    // requests even for the longest series). Only free chapters are
-    // listed: premium chapters require a paid subscription the app
-    // cannot provide, so they would never load.
-    const chapters: Plugin.ChapterItem[] = [];
+    // requests even for the longest series). Free chapters come from
+    // /chapters/{id} and paywalled chapters from /chapters/{id}/paid;
+    // the two are merged so locked chapters show up with a 🔒 prefix.
+    // Opening a locked chapter shows a notice: it needs a paid
+    // subscription on the website and cannot be read here.
+    const all: ChapterInfo[] = [];
     let pageNo = 1;
     let lastPage = 1;
     do {
@@ -191,23 +198,57 @@ class WeTriedTLS implements Plugin.PluginBase {
       );
       const page = parseChapterList(json);
       lastPage = page.lastPage;
-      for (const c of page.items) {
+      for (const c of page.items) all.push(c);
+      pageNo++;
+    } while (pageNo <= lastPage);
+
+    // Paid chapters are a bonus, not a requirement: if this endpoint
+    // ever fails, the novel still loads with its free chapters.
+    try {
+      let paidPageNo = 1;
+      let paidLastPage = 1;
+      do {
+        const json = await fetchText(
+          API +
+            '/chapters/' +
+            detail.id +
+            '/paid?query=&page=' +
+            paidPageNo +
+            '&perPage=1000&order=asc',
+        );
+        const page = parseChapterList(json, true);
+        paidLastPage = page.lastPage;
+        for (const c of page.items) all.push(c);
+        paidPageNo++;
+      } while (paidPageNo <= paidLastPage);
+    } catch (e) {
+      // ignore: free chapters are already collected above
+    }
+
+    const seen: { [slug: string]: boolean } = {};
+    const chapters: Plugin.ChapterItem[] = [];
+    all
+      .filter(c => {
+        if (!c.slug || seen[c.slug]) return false;
+        seen[c.slug] = true;
+        return true;
+      })
+      .sort((a, b) => a.number - b.number)
+      .forEach(c => {
         chapters.push({
-          name: c.name,
+          name: chapterDisplayName(c),
           path: slug + '/' + c.slug,
           releaseTime: c.publishedAt,
           chapterNumber: c.number,
         });
-      }
-      pageNo++;
-    } while (pageNo <= lastPage);
+      });
 
     const novel: Plugin.SourceNovel = {
       path: novelPath,
       name: detail.name,
       status: mapStatus(detail.status),
     };
-    if (detail.cover) novel.cover = detail.cover;
+    if (detail.cover) novel.cover = coverUrl(detail.cover);
     if (detail.author) novel.author = detail.author;
     if (detail.genres.length) novel.genres = detail.genres.join(', ');
     if (detail.summary) novel.summary = detail.summary;
@@ -254,7 +295,7 @@ class WeTriedTLS implements Plugin.PluginBase {
     return page.items.map(n => ({
       name: n.title,
       path: n.slug,
-      cover: n.cover,
+      cover: coverUrl(n.cover),
     }));
   }
 

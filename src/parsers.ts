@@ -23,6 +23,8 @@ export interface ChapterInfo {
   name: string;
   number: number;
   publishedAt: string;
+  /** True for chapters behind the site's paywall (from the /paid endpoint). */
+  locked: boolean;
 }
 
 export interface QueryPage {
@@ -127,28 +129,12 @@ export function parseQueryResults(jsonText: string): QueryPage {
   return { items, lastPage };
 }
 
-/** Parse the /series/{slug} API response. */
-export function parseSeriesDetail(jsonText: string): NovelDetails | null {
-  const s = safeJson(jsonText);
-  if (!s || typeof s !== 'object' || typeof s.id !== 'number') return null;
-  const tags = Array.isArray(s.tags) ? s.tags : [];
-  const genres = tags
-    .map((t: any) => (t && typeof t.name === 'string' ? t.name.trim() : ''))
-    .filter((g: string) => g.length > 0);
-  return {
-    id: s.id,
-    name: typeof s.title === 'string' ? decodeEntities(s.title.trim()) : '',
-    author: typeof s.author === 'string' ? s.author.trim() : '',
-    genres,
-    status: typeof s.status === 'string' ? s.status.trim() : '',
-    cover: typeof s.thumbnail === 'string' ? s.thumbnail : '',
-    summary:
-      typeof s.description === 'string' ? stripHtml(s.description) : '',
-  };
-}
-
-/** Parse one page of the /chapters/{seriesId} API response. */
-export function parseChapterList(jsonText: string): ChapterListPage {
+/** Parse one page of the /chapters/{seriesId} API response.
+ * Pass locked=true for pages from the /paid endpoint. */
+export function parseChapterList(
+  jsonText: string,
+  locked: boolean = false,
+): ChapterListPage {
   const root = safeJson(jsonText);
   const items: ChapterInfo[] = [];
   let lastPage = 1;
@@ -174,10 +160,58 @@ export function parseChapterList(jsonText: string): ChapterListPage {
         number: isNaN(idx) ? 0 : idx,
         publishedAt:
           typeof c.created_at === 'string' ? c.created_at : '',
+        locked,
       });
     }
   }
   return { items, lastPage };
+}
+
+/**
+ * The display name for a chapter in the app. Locked (paywalled) chapters
+ * get a lock prefix so readers can see which ones are premium before
+ * tapping them. LNReader sorts by chapterNumber, so the prefix never
+ * affects chapter order.
+ */
+export function chapterDisplayName(c: ChapterInfo): string {
+  return c.locked ? '🔒 ' + c.name : c.name;
+}
+
+/**
+ * Route a cover through a fast image proxy at a list-friendly size.
+ * The site's own covers are up to ~1 MB (they load painfully slowly in
+ * the app's novel list) and the CDN offers no smaller variant, so we
+ * request a 400px-wide webp instead. Non-URL values pass through.
+ */
+export function coverUrl(thumbnail: string): string {
+  const t = (thumbnail || '').trim();
+  if (!/^https?:\/\//i.test(t)) return t;
+  const bare = t.replace(/^https?:\/\//i, '');
+  return (
+    'https://images.weserv.nl/?url=' +
+    encodeURIComponent(bare) +
+    '&w=400&q=80&output=webp'
+  );
+}
+
+/** Parse the /series/{slug} API response. */
+export function parseSeriesDetail(jsonText: string): NovelDetails | null {
+  const s = safeJson(jsonText);
+  if (!s || typeof s !== 'object' || typeof s.id !== 'number') return null;
+  const tags = Array.isArray(s.tags) ? s.tags : [];
+  const genres = tags
+    .map((t: any) => (t && typeof t.name === 'string' ? t.name.trim() : ''))
+    .filter((g: string) => g.length > 0);
+  return {
+    id: s.id,
+    name: typeof s.title === 'string' ? decodeEntities(s.title.trim()) : '',
+    author: typeof s.author === 'string' ? s.author.trim() : '',
+    genres,
+    status: typeof s.status === 'string' ? s.status.trim() : '',
+    cover: typeof s.thumbnail === 'string' ? s.thumbnail : '',
+    summary:
+      typeof s.description === 'string' ? stripHtml(s.description) : '',
+  };
 }
 
 /**
