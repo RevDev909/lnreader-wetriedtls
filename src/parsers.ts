@@ -2,6 +2,21 @@
 // These functions take raw HTML / JSON and have no dependencies,
 // so they can be unit-tested in plain Node.
 
+export const API_BASE = 'https://api.wetriedtls.com';
+
+/**
+ * Build the catalog browse URL for a page. The API honors the `status`
+ * query param (Ongoing / Completed / Dropped / Canceled) but ignores
+ * `tags` and `sort` params, so status is the only exposed filter.
+ * 'all' (or empty) means no status filtering.
+ */
+export function catalogUrl(pageNo: number, status?: string): string {
+  let url = API_BASE + '/query?adult=true&query_string=&page=' + pageNo;
+  const s = (status || '').trim();
+  if (s && s !== 'all') url += '&status=' + encodeURIComponent(s);
+  return url;
+}
+
 export interface NovelCard {
   slug: string;
   title: string;

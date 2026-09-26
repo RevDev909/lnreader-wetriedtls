@@ -1,5 +1,7 @@
 import {
+  API_BASE,
   ChapterInfo,
+  catalogUrl,
   chapterDisplayName,
   coverUrl,
   extractFlightText,
@@ -140,7 +142,6 @@ async function fetchText(url: string): Promise<string> {
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-const API = 'https://api.wetriedtls.com';
 
 function mapStatus(s: string): string {
   if (s === 'Ongoing') return NovelStatus.Ongoing;
@@ -150,20 +151,56 @@ function mapStatus(s: string): string {
   return NovelStatus.Unknown;
 }
 
+// --- Catalog filters ----------------------------------------------------
+// The API honors the `status` query param (Ongoing / Completed / Dropped /
+// Canceled) but ignores `tags` and `sort` params, so the filter menu
+// offers status only. 'Picker' matches FilterTypes.Picker at runtime.
+const STATUS_FILTER_OPTIONS = [
+  { label: 'All', value: 'all' },
+  { label: 'Ongoing', value: 'Ongoing' },
+  { label: 'Completed', value: 'Completed' },
+  { label: 'Dropped', value: 'Dropped' },
+  { label: 'Canceled', value: 'Canceled' },
+];
+
+/**
+ * Pull a plain string value out of the app's filter payload, which may be
+ * the raw string or a { type, value } wrapper object.
+ */
+function extractFilterValue(filters: unknown, key: string): string {
+  if (!filters || typeof filters !== 'object') return '';
+  const f = (filters as Record<string, any>)[key];
+  if (f === null || f === undefined) return '';
+  const v =
+    typeof f === 'object' && 'value' in f ? (f as { value: unknown }).value : f;
+  return typeof v === 'string' ? v : '';
+}
+
 class WeTriedTLS implements Plugin.PluginBase {
   id = 'wetriedtls';
   name = 'We Tried TLS';
   icon = 'src/en/wetriedtls/icon.png';
   site = 'https://wetriedtls.com';
-  version = '1.0.3';
+  version = '1.0.4';
+
+  filters = {
+    status: {
+      type: 'Picker',
+      label: 'Status',
+      value: 'all',
+      options: STATUS_FILTER_OPTIONS,
+    },
+  };
 
   async popularNovels(
     pageNo: number,
-    _options: Plugin.PopularNovelsOptions,
+    options: Plugin.PopularNovelsOptions,
   ): Promise<Plugin.NovelItem[]> {
-    const json = await fetchText(
-      API + '/query?adult=true&query_string=&page=' + pageNo,
+    const status = extractFilterValue(
+      options && options.filters,
+      'status',
     );
+    const json = await fetchText(catalogUrl(pageNo, status));
     const page = parseQueryResults(json);
     if (pageNo > page.lastPage) return [];
     return page.items.map(n => ({
@@ -175,7 +212,7 @@ class WeTriedTLS implements Plugin.PluginBase {
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     const slug = novelPath.split('/').filter(Boolean).pop() || '';
-    const detail = parseSeriesDetail(await fetchText(API + '/series/' + slug));
+    const detail = parseSeriesDetail(await fetchText(API_BASE + '/series/' + slug));
     if (!detail) throw new Error('Could not load novel details');
 
     // The chapter list is paginated (500 per page keeps it to ~2
@@ -189,7 +226,7 @@ class WeTriedTLS implements Plugin.PluginBase {
     let lastPage = 1;
     do {
       const json = await fetchText(
-        API +
+        API_BASE +
           '/chapters/' +
           detail.id +
           '?page=' +
@@ -209,7 +246,7 @@ class WeTriedTLS implements Plugin.PluginBase {
       let paidLastPage = 1;
       do {
         const json = await fetchText(
-          API +
+          API_BASE +
             '/chapters/' +
             detail.id +
             '/paid?query=&page=' +
@@ -284,7 +321,7 @@ class WeTriedTLS implements Plugin.PluginBase {
     pageNo: number,
   ): Promise<Plugin.NovelItem[]> {
     const json = await fetchText(
-      API +
+      API_BASE +
         '/query?adult=true&query_string=' +
         encodeURIComponent(searchTerm) +
         '&page=' +
