@@ -9,5 +9,5 @@
     "build": "node scripts/build.mjs",
     "test": "esbuild src/parsers.ts --bundle --format=esm --platform=node --outfile=test/parsers.bundle.mjs --log-level=error && node test/test.mjs"
   },
-  "version": "1.0.1"
+  "version": "1.0.7"
 }
