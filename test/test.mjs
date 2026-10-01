@@ -4,7 +4,6 @@ import {
   API_BASE,
   catalogUrl,
   chapterDisplayName,
-  coverUrl,
   extractFlightText,
   parseChapterContent,
   parseChapterList,
@@ -12,6 +11,7 @@ import {
   parseSeriesDetail,
   shrinkIllustrations,
   stripHtml,
+  sanitizeHtml,
 } from './parsers.bundle.mjs';
 
 const fx = n => readFileSync(`test/fixtures/${n}`, 'utf8');
@@ -67,7 +67,52 @@ console.log('parseChapterList');
     JSON.stringify(p.items[0]),
   );
   check('chapter number', p.items[1].number === 1, String(p.items[1].number));
-  check('garbage -> empty', parseChapterList('nope').items.length === 0);
+  const throws = fn => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  check(
+    'non-JSON -> throws (a malformed page must never look like an empty page)',
+    throws(() => parseChapterList('nope')),
+  );
+  check(
+    'error page -> throws',
+    throws(() => parseChapterList('<html><body>502 Bad Gateway</body></html>')),
+  );
+  check(
+    'wrong shape -> throws',
+    throws(() => parseChapterList('{"foo":1}')),
+  );
+  check(
+    'non-array data -> throws',
+    throws(() => parseChapterList('{"meta":{"last_page":3},"data":{}}')),
+  );
+  check(
+    'blank response throws (a failed fetch must never look like the end of the list)',
+    (() => {
+      try {
+        parseChapterList('');
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
+  );
+  check(
+    'whitespace response throws',
+    (() => {
+      try {
+        parseChapterList('   ');
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
+  );
   check('free chapters not locked', p.items.every(c => c.locked === false));
 }
 
@@ -122,20 +167,38 @@ console.log('catalogUrl');
   );
 }
 
-console.log('coverUrl');
+console.log('covers (direct CDN, trimmed at source)');
 {
-  const out = coverUrl('https://media.reaperscans.net/file/7BSHk1m/covers/abc.jpg');
-  check('proxied', out.startsWith('https://images.weserv.nl/?url='), out);
-  check('keeps source', out.includes('media.reaperscans.net'), out);
-  check('width param', out.includes('w=400'), out);
-  check('webp output', out.includes('output=webp'), out);
-  check('empty passthrough', coverUrl('') === '');
-  check('non-url passthrough', coverUrl('notaurl') === 'notaurl');
+  // The coverUrl() identity wrapper was removed in the audit pass: the
+  // parsers now trim cover URLs at the source and pass them through
+  // directly (no proxy dependency).
+  const d = parseSeriesDetail(
+    '{"id":1,"title":"T","thumbnail":" https://media.reaperscans.net/file/7BSHk1m/covers/abc.jpg "}',
+  );
+  check(
+    'detail cover direct + trimmed',
+    d !== null &&
+      d.cover === 'https://media.reaperscans.net/file/7BSHk1m/covers/abc.jpg',
+    d && d.cover,
+  );
+  const q = parseQueryResults(
+    '{"data":[{"series_slug":"x","title":"T","series_type":"Novel","thumbnail":" https://example.com/c.jpg "}],"meta":{"last_page":1}}',
+  );
+  check(
+    'catalog cover direct + trimmed',
+    q.items.length === 1 && q.items[0].cover === 'https://example.com/c.jpg',
+    JSON.stringify(q.items),
+  );
 }
 
 console.log('parseChapterContent (free chapter)');
 {
-  const r = parseChapterContent(fx('chapter.html'));
+  // The known titles let the parser strip the site's repeated title
+  // header while keeping genuine bold-only content lines.
+  const r = parseChapterContent(fx('chapter.html'), [
+    'A Knight who Eternally Regresses',
+    'Chapter 1: My Dream was to be a Knight',
+  ]);
   check('status ok', r.status === 'ok', r.status);
   const html = r.status === 'ok' ? r.html : '';
   check('has chapter text', html.includes('My dream was to be a knight.'));
@@ -202,6 +265,189 @@ console.log('parseChapterContent (edge cases)');
       .status === 'notfound',
   );
   check('empty html -> empty', parseChapterContent('<html></html>').status === 'empty');
+}
+
+console.log('sanitizeHtml');
+{
+  check(
+    'strips event handlers',
+    sanitizeHtml('<img src="x.jpg" onerror="alert(1)" alt="a">') ===
+      '<img src="x.jpg" alt="a">',
+  );
+  check(
+    'strips script elements',
+    !/script/i.test(sanitizeHtml('<p>hi</p><script>alert(1)</script>')),
+  );
+  check(
+    'strips iframes',
+    !/iframe/i.test(sanitizeHtml('<p>t</p><iframe src="x"></iframe>')),
+  );
+  check(
+    'neutralizes javascript: urls',
+    sanitizeHtml('<a href="javascript:alert(1)">click</a>') === '<a>click</a>',
+  );
+  check(
+    'keeps safe links',
+    sanitizeHtml('<a href="https://example.com">click</a>') ===
+      '<a href="https://example.com">click</a>',
+  );
+  check(
+    'keeps safe markup',
+    sanitizeHtml('<p>Hello <strong>world</strong></p><img src="https://x/y.jpg">') ===
+      '<p>Hello <strong>world</strong></p><img src="https://x/y.jpg">',
+  );
+}
+
+console.log('parseChapterContent (image-only chapter)');
+{
+  // Build a minimal flight page whose chapter_content is inline HTML with
+  // only an illustration and no text: it must parse as real content.
+  const inner = JSON.stringify({
+    chapter_content: '<p><img src="https://example.com/pic.jpg"></p>',
+  })
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+  const page =
+    '<html><body><script>self.__next_f.push([1,"' +
+    inner +
+    '"])</script></body></html>';
+  const r = parseChapterContent(page);
+  check('image-only status ok', r.status === 'ok', r.status);
+  check(
+    'image kept',
+    r.status === 'ok' && r.html.includes('https://example.com/pic.jpg'),
+    r.status === 'ok' ? r.html : '',
+  );
+}
+
+console.log('parseChapterContent (malicious markup sanitized)');
+{
+  const inner = JSON.stringify({
+    chapter_content:
+      '<p>Hello <a href="javascript:alert(2)">click</a></p><img src="x.jpg" onerror="alert(1)">',
+  })
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+  const page =
+    '<html><body><script>self.__next_f.push([1,"' +
+    inner +
+    '"])</script></body></html>';
+  const r = parseChapterContent(page);
+  check('status ok', r.status === 'ok', r.status);
+  const html = r.status === 'ok' ? r.html : '';
+  check('text kept', html.includes('Hello') && html.includes('click'));
+  check('no event handlers', !/onerror/i.test(html), html);
+  check('no javascript: urls', !/javascript:/i.test(html), html);
+}
+
+console.log('sanitizeHtml (encoded script URLs)');
+{
+  check(
+    'decimal entity javascript:',
+    sanitizeHtml('<a href="&#106;avascript:alert(1)">x</a>') === '<a>x</a>',
+  );
+  check(
+    'hex entity javascript:',
+    sanitizeHtml('<a href="&#x6A;avascript:alert(1)">x</a>') === '<a>x</a>',
+  );
+  check(
+    'named entity colon',
+    sanitizeHtml('<a href="javascript&colon;alert(1)">x</a>') === '<a>x</a>',
+  );
+  check(
+    'tab-smuggled scheme',
+    sanitizeHtml('<a href="java\tscript:alert(1)">x</a>') === '<a>x</a>',
+  );
+  check(
+    'vbscript blocked',
+    sanitizeHtml('<a href="vbscript:msgbox(1)">x</a>') === '<a>x</a>',
+  );
+  check(
+    'safe https kept',
+    // The allowlist sanitizer re-escapes attribute values on emit, so a
+    // raw & in a URL comes out as &amp; — the same URL to a browser,
+    // and the audited behavior.
+    sanitizeHtml('<a href="https://example.com/?a=1&b=2">x</a>') ===
+      '<a href="https://example.com/?a=1&amp;b=2">x</a>',
+  );
+}
+
+console.log('parseChapterContent (mixed containers kept)');
+{
+  // A chapter mixing paragraphs with a list: the list must not be dropped.
+  const inner = JSON.stringify({
+    chapter_content:
+      '<p>Introduction</p><ul><li>Important note</li></ul><p>Outro</p>',
+  })
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+  const page =
+    '<html><body><script>self.__next_f.push([1,"' +
+    inner +
+    '"])</script></body></html>';
+  const r = parseChapterContent(page);
+  check('status ok', r.status === 'ok', r.status);
+  const html = r.status === 'ok' ? r.html : '';
+  check('list item kept', html.includes('Important note'), html);
+  check(
+    'paragraphs kept',
+    html.includes('Introduction') && html.includes('Outro'),
+    html,
+  );
+}
+
+console.log('parseChapterContent (bold lines)');
+{
+  const mk = bodyInner => {
+    const inner = JSON.stringify({ chapter_content: bodyInner })
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
+    return (
+      '<html><body><script>self.__next_f.push([1,"' +
+      inner +
+      '"])</script></body></html>'
+    );
+  };
+  const titles = ['My Novel', 'Chapter 1: The Beginning'];
+  const r1 = parseChapterContent(
+    mk('<p><strong>Meanwhile, at the palace...</strong></p><p>Story.</p>'),
+    titles,
+  );
+  check(
+    'genuine bold line kept',
+    r1.status === 'ok' && r1.html.includes('Meanwhile, at the palace'),
+    r1.status === 'ok' ? r1.html : r1.status,
+  );
+  const r2 = parseChapterContent(
+    mk('<p><strong>Chapter 1: The Beginning</strong></p><p>Story.</p>'),
+    titles,
+  );
+  check(
+    'title repeat stripped',
+    r2.status === 'ok' &&
+      !r2.html.includes('Chapter 1: The Beginning') &&
+      r2.html.includes('Story.'),
+    r2.status === 'ok' ? r2.html : r2.status,
+  );
+  const r3 = parseChapterContent(
+    mk('<p><strong>Chapter 1: The Beginning</strong></p><p>Story.</p>'),
+  );
+  check(
+    'no titles -> bold kept (safe default)',
+    r3.status === 'ok' && r3.html.includes('Chapter 1: The Beginning'),
+    r3.status === 'ok' ? r3.html : r3.status,
+  );
+  const r4 = parseChapterContent(
+    mk('<p><strong>Translator: Ryuu</strong></p><p>Story.</p>'),
+    titles,
+  );
+  check(
+    'credit line stripped',
+    r4.status === 'ok' &&
+      !r4.html.includes('Translator: Ryuu') &&
+      r4.html.includes('Story.'),
+    r4.status === 'ok' ? r4.html : r4.status,
+  );
 }
 
 console.log('stripHtml');
