@@ -3,8 +3,8 @@ import {
   ChapterInfo,
   catalogUrl,
   chapterDisplayName,
-  coverUrl,
   extractFlightText,
+  MAX_RESPONSE_CHARS,
   parseChapterContent,
   parseChapterList,
   parseQueryResults,
@@ -142,6 +142,14 @@ async function fetchText(url: string): Promise<string> {
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+/** fetchText with the size cap applied — used for every API call. */
+async function fetchApiText(url: string): Promise<string> {
+  const text = await fetchText(url);
+  if (text.length > MAX_RESPONSE_CHARS)
+    throw new Error('Response too large to parse safely');
+  return text;
+}
+
 
 function mapStatus(s: string): string {
   if (s === 'Ongoing') return NovelStatus.Ongoing;
@@ -176,12 +184,35 @@ function extractFilterValue(filters: unknown, key: string): string {
   return typeof v === 'string' ? v : '';
 }
 
+/** Cap on the session chapter-title cache (see the class field). */
+const MAX_TITLE_CACHE_ENTRIES = 4000;
+/** Runaway-pagination guard for the chapter-list loops. */
+const MAX_LIST_PAGES = 200;
+
 class WeTriedTLS implements Plugin.PluginBase {
   id = 'wetriedtls';
   name = 'We Tried TLS';
   icon = 'src/en/wetriedtls/icon.png';
   site = 'https://wetriedtls.com';
-  version = '1.0.4';
+  version = '1.0.7';
+
+  // Novel/chapter titles behind each chapter path, recorded by parseNovel.
+  // parseChapter passes them to parseChapterContent so the site's repeated
+  // title header can be told apart from a genuine bold-only content line
+  // (which must be kept). Bounded: the plugin is a session singleton, so
+  // without a cap this grows with every novel browsed — when the cap is
+  // hit the oldest entries are evicted (a cold entry only means a title
+  // header may be kept, the parser's safe default).
+  private chapterTitles = new Map<string, string[]>();
+
+  private rememberTitles(path: string, titles: string[]): void {
+    this.chapterTitles.set(path, titles);
+    while (this.chapterTitles.size > MAX_TITLE_CACHE_ENTRIES) {
+      const oldest = this.chapterTitles.keys().next();
+      if (oldest.done) break;
+      this.chapterTitles.delete(oldest.value);
+    }
+  }
 
   filters = {
     status: {
@@ -200,19 +231,19 @@ class WeTriedTLS implements Plugin.PluginBase {
       options && options.filters,
       'status',
     );
-    const json = await fetchText(catalogUrl(pageNo, status));
+    const json = await fetchApiText(catalogUrl(pageNo, status));
     const page = parseQueryResults(json);
     if (pageNo > page.lastPage) return [];
     return page.items.map(n => ({
       name: n.title,
       path: n.slug,
-      cover: coverUrl(n.cover),
+      cover: n.cover,
     }));
   }
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     const slug = novelPath.split('/').filter(Boolean).pop() || '';
-    const detail = parseSeriesDetail(await fetchText(API_BASE + '/series/' + slug));
+    const detail = parseSeriesDetail(await fetchApiText(API_BASE + '/series/' + slug));
     if (!detail) throw new Error('Could not load novel details');
 
     // The chapter list is paginated (500 per page keeps it to ~2
@@ -225,7 +256,9 @@ class WeTriedTLS implements Plugin.PluginBase {
     let pageNo = 1;
     let lastPage = 1;
     do {
-      const json = await fetchText(
+      if (pageNo > MAX_LIST_PAGES)
+        throw new Error('Chapter list pagination did not terminate');
+      const json = await fetchApiText(
         API_BASE +
           '/chapters/' +
           detail.id +
@@ -233,6 +266,13 @@ class WeTriedTLS implements Plugin.PluginBase {
           pageNo +
           '&perPage=500&order=asc',
       );
+      // fetchText throws after its retries are exhausted, and
+      // parseChapterList throws on a blank response — either way a failed
+      // page fails the whole novel load loudly. A failed page must never
+      // be treated as the last page: that would return an incomplete
+      // chapter list as though it were complete.
+      if (!json || !json.trim())
+        throw new Error('Failed to load the chapter list (page ' + pageNo + ')');
       const page = parseChapterList(json);
       lastPage = page.lastPage;
       for (const c of page.items) all.push(c);
@@ -245,7 +285,9 @@ class WeTriedTLS implements Plugin.PluginBase {
       let paidPageNo = 1;
       let paidLastPage = 1;
       do {
-        const json = await fetchText(
+        if (paidPageNo > MAX_LIST_PAGES)
+          throw new Error('Paid chapter list pagination did not terminate');
+        const json = await fetchApiText(
           API_BASE +
             '/chapters/' +
             detail.id +
@@ -262,22 +304,31 @@ class WeTriedTLS implements Plugin.PluginBase {
       // ignore: free chapters are already collected above
     }
 
-    const seen: { [slug: string]: boolean } = {};
+    // A Set, not a plain object: with a Record, slugs like 'constructor'
+    // or 'toString' read inherited Object members as truthy and those
+    // chapters would be silently dropped as false duplicates.
+    const seen = new Set<string>();
     const chapters: Plugin.ChapterItem[] = [];
     all
       .filter(c => {
-        if (!c.slug || seen[c.slug]) return false;
-        seen[c.slug] = true;
+        if (!c.slug || seen.has(c.slug)) return false;
+        seen.add(c.slug);
         return true;
       })
       .sort((a, b) => a.number - b.number)
       .forEach(c => {
+        const displayName = chapterDisplayName(c);
+        const chapterPath = slug + '/' + c.slug;
         chapters.push({
-          name: chapterDisplayName(c),
-          path: slug + '/' + c.slug,
+          name: displayName,
+          path: chapterPath,
           releaseTime: c.publishedAt,
           chapterNumber: c.number,
         });
+        this.rememberTitles(chapterPath, [
+          detail.name,
+          displayName.replace(/^🔒\s*/, ''),
+        ]);
       });
 
     const novel: Plugin.SourceNovel = {
@@ -285,7 +336,11 @@ class WeTriedTLS implements Plugin.PluginBase {
       name: detail.name,
       status: mapStatus(detail.status),
     };
-    if (detail.cover) novel.cover = coverUrl(detail.cover);
+    // Covers are served directly from the site's CDN: an earlier version
+    // proxied them for smaller thumbnails, but a single URL field cannot
+    // carry a fallback — if the proxy is blocked or down, every cover
+    // breaks while the site's own CDN still works.
+    if (detail.cover) novel.cover = detail.cover;
     if (detail.author) novel.author = detail.author;
     if (detail.genres.length) novel.genres = detail.genres.join(', ');
     if (detail.summary) novel.summary = detail.summary;
@@ -295,7 +350,7 @@ class WeTriedTLS implements Plugin.PluginBase {
 
   async parseChapter(chapterPath: string): Promise<string> {
     const html = await fetchText(this.site + '/series/' + chapterPath);
-    const result = parseChapterContent(html);
+    const result = parseChapterContent(html, this.chapterTitles.get(chapterPath));
     if (result.status === 'ok') return result.html;
     if (result.status === 'premium') {
       return (
@@ -320,7 +375,7 @@ class WeTriedTLS implements Plugin.PluginBase {
     searchTerm: string,
     pageNo: number,
   ): Promise<Plugin.NovelItem[]> {
-    const json = await fetchText(
+    const json = await fetchApiText(
       API_BASE +
         '/query?adult=true&query_string=' +
         encodeURIComponent(searchTerm) +
@@ -332,7 +387,7 @@ class WeTriedTLS implements Plugin.PluginBase {
     return page.items.map(n => ({
       name: n.title,
       path: n.slug,
-      cover: coverUrl(n.cover),
+      cover: n.cover,
     }));
   }
 
